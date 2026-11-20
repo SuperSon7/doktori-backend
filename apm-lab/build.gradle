@@ -1,0 +1,29 @@
+plugins {
+ id 'java'
+ id 'org.springframework.boot' version '3.5.9'
+ id 'io.spring.dependency-management' version '1.1.7'
+}
+repositories { mavenCentral() }
+java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
+sourceSets.main.java {
+ srcDirs = ['src/main/java', '../api/src/main/java', '../common/src/main/java']
+ include 'lab/apm/**'
+ include 'com/example/doktoribackend/user/policy/**'
+ include 'com/example/doktoribackend/user/repository/ReadingVolumeRepository.java'
+ include 'com/example/doktoribackend/user/repository/ReadingPurposeRepository.java'
+ include 'com/example/doktoribackend/reading/repository/ReadingGenreRepository.java'
+ include 'com/example/doktoribackend/reading/domain/ReadingGenre.java'
+ include 'com/example/doktoribackend/common/domain/BaseTimeEntity.java'
+ include 'com/example/doktoribackend/common/response/ApiResult.java'
+ include 'com/example/doktoribackend/config/MdcTraceFilter.java'
+}
+dependencies {
+ implementation 'org.springframework.boot:spring-boot-starter-web'
+ implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+ implementation 'org.springframework.boot:spring-boot-starter-actuator'
+ implementation 'io.swagger.core.v3:swagger-annotations-jakarta:2.2.30'
+ runtimeOnly 'com.mysql:mysql-connector-j'
+ compileOnly 'org.projectlombok:lombok'
+ annotationProcessor 'org.projectlombok:lombok'
+}
+bootJar { archiveFileName = 'apm-pilot.jar' }
