@@ -8,7 +8,6 @@ import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.AmqpHeaders;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.stereotype.Component;
@@ -25,7 +24,7 @@ public class NotificationDeliveryConsumer {
 
     private final SseEmitterService sseEmitterService;
     private final FcmService fcmService;
-    private final RabbitTemplate rabbitTemplate;
+    private final ConfirmedNotificationPublisher publisher;
     private final Counter deliverySuccessCounter;
     private final Counter deliveryFailureCounter;
     private final Counter deliveryRetriedCounter;
@@ -33,11 +32,11 @@ public class NotificationDeliveryConsumer {
 
     public NotificationDeliveryConsumer(SseEmitterService sseEmitterService,
                                        FcmService fcmService,
-                                       RabbitTemplate rabbitTemplate,
+                                       ConfirmedNotificationPublisher publisher,
                                        MeterRegistry meterRegistry) {
         this.sseEmitterService = sseEmitterService;
         this.fcmService = fcmService;
-        this.rabbitTemplate = rabbitTemplate;
+        this.publisher = publisher;
         this.deliverySuccessCounter = Counter.builder("notification.delivery")
                 .tag("result", "success")
                 .description("Notification delivery attempts")
@@ -65,24 +64,32 @@ public class NotificationDeliveryConsumer {
     ) throws IOException {
         try {
             deliver(task);
-            channel.basicAck(deliveryTag, false);
-            deliverySuccessCounter.increment();
         } catch (Exception e) {
-            channel.basicAck(deliveryTag, false);
-
             int retryCount = getRetryCount(message);
-            if (retryCount < NotificationRabbitConfig.MAX_RETRY_COUNT) {
-                log.warn("Notification delivery failed (attempt {}/{}), retrying for userIds: {}",
+            try {
+                if (retryCount < NotificationRabbitConfig.MAX_RETRY_COUNT) {
+                    log.warn("Notification delivery failed (attempt {}/{}), retrying for userIds: {}",
                         retryCount + 1, NotificationRabbitConfig.MAX_RETRY_COUNT, task.userIds(), e);
-                sendToWaitQueue(task, retryCount + 1);
-                deliveryRetriedCounter.increment();
-            } else {
-                log.error("Notification delivery permanently failed after {} retries for userIds: {}",
+                    sendToWaitQueue(task, retryCount + 1);
+                    deliveryRetriedCounter.increment();
+                } else {
+                    log.error("Notification delivery permanently failed after {} retries for userIds: {}",
                         NotificationRabbitConfig.MAX_RETRY_COUNT, task.userIds(), e);
-                sendToDlq(task, retryCount);
-                deliveryFailureCounter.increment();
+                    sendToDlq(task, retryCount);
+                    deliveryFailureCounter.increment();
+                }
+            } catch (RuntimeException publishFailure) {
+                // 원본은 대상 큐의 confirm 전에는 ACK하지 않는다. 응답 불명확 시 재전달될 수 있다.
+                log.error("Retry handoff failed; retaining original notification", publishFailure);
+                channel.basicNack(deliveryTag, false, true);
+                return;
             }
+            channel.basicAck(deliveryTag, false);
+            return;
         }
+        // ACK 실패를 배달 실패로 분류해 재발행하지 않는다.
+        channel.basicAck(deliveryTag, false);
+        deliverySuccessCounter.increment();
     }
 
     @RabbitListener(queues = NotificationRabbitConfig.DLQ)
@@ -120,7 +127,7 @@ public class NotificationDeliveryConsumer {
             }
         }
 
-        if (sseFailed && fcmFailed) {
+        if (sseFailed && (fcmTargetIds.isEmpty() || fcmFailed)) {
             throw new RuntimeException("Both SSE and FCM delivery failed for userIds: " + userIds);
         }
     }
@@ -136,7 +143,7 @@ public class NotificationDeliveryConsumer {
 
     private void sendToWaitQueue(NotificationDeliveryTask task, int retryCount) {
         long delay = NotificationRabbitConfig.getRetryDelay(retryCount);
-        rabbitTemplate.convertAndSend("", NotificationRabbitConfig.WAIT_QUEUE, task, msg -> {
+        publisher.publish("", NotificationRabbitConfig.WAIT_QUEUE, task, msg -> {
             msg.getMessageProperties().setExpiration(String.valueOf(delay));
             msg.getMessageProperties().getHeaders().put(RETRY_COUNT_HEADER, retryCount);
             return msg;
@@ -144,7 +151,7 @@ public class NotificationDeliveryConsumer {
     }
 
     private void sendToDlq(NotificationDeliveryTask task, int retryCount) {
-        rabbitTemplate.convertAndSend("", NotificationRabbitConfig.DLQ, task, msg -> {
+        publisher.publish("", NotificationRabbitConfig.DLQ, task, msg -> {
             msg.getMessageProperties().getHeaders().put(RETRY_COUNT_HEADER, retryCount);
             return msg;
         });

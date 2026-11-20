@@ -13,7 +13,8 @@ public class NotificationRabbitConfig {
 
     public static final String EXCHANGE    = "notification.exchange";
     public static final String QUEUE       = "notification.delivery.queue";
-    public static final String WAIT_QUEUE  = "notification.delivery.wait";
+    // 기존 classic wait queue의 TTL 메시지를 지우지 않고 새 quorum queue로 전환한다.
+    public static final String WAIT_QUEUE  = "notification.delivery.wait.v2";
     public static final String DLQ         = "notification.delivery.dlq";
     public static final String ROUTING_KEY = "notification.delivery";
 
@@ -43,6 +44,9 @@ public class NotificationRabbitConfig {
     @Bean
     public Queue notificationWaitQueue() {
         return QueueBuilder.durable(WAIT_QUEUE)
+                .quorum()
+                .withArgument("x-dead-letter-strategy", "at-least-once")
+                .withArgument("x-overflow", "reject-publish")
                 .deadLetterExchange(EXCHANGE)
                 .deadLetterRoutingKey(ROUTING_KEY)
                 .build();

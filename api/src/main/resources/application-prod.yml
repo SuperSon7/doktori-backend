@@ -57,3 +57,12 @@ spring:
       sentinel:
         master: ${SPRING_REDIS_SENTINEL_MASTER}
         nodes: ${SPRING_REDIS_SENTINEL_NODES}
+        password: ${SPRING_REDIS_SENTINEL_PASSWORD:${SPRING_REDIS_PASSWORD}}
+
+---
+spring:
+  config:
+    activate:
+      on-profile: rabbitmq-ha
+  rabbitmq:
+    addresses: ${SPRING_RABBITMQ_ADDRESSES}
